@@ -27,10 +27,13 @@ namespace RISC_V
         uint64_t pc;
         uint64_t alu(uint64_t op1, uint64_t op2, ALU_OP control_bits);
         uint64_t mux(uint64_t a, uint64_t b, int select_bit);
-        std::vector<std::string> memory;
+        std::vector<uint8_t> memory;
+        uint32_t instruction_memory(uint64_t instruction_addr);
+        uint64_t data_memory(uint64_t memory_addr, uint64_t write_data, int mem_write, int mem_read);
         std::vector<uint32_t> instruction_parser(uint32_t instruction);
-        // std::vector<std::string> split (const std::string str, char delimiter);
-        // std::string pick_chars (const std::string str, int start_idx, int end_idx);
+        std::vector<uint8_t> control_unit(uint8_t opcode);
+        int64_t imm_gen(uint32_t instruction, uint8_t opcode);
+        std::vector<uint64_t> register_file(uint64_t write_data, uint32_t rs1, uint32_t rs2, uint32_t rd, int reg_write);
 
     public:
         Processor();
