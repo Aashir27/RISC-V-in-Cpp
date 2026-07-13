@@ -3,6 +3,7 @@
 
 RISC_V::Processor::Processor()
 {
+    final_write_data = 0;
     pc = 0;
     registers.fill(0);
     std::ifstream file("../data/instructions.txt");
@@ -48,12 +49,8 @@ uint64_t RISC_V::Processor::alu(uint64_t op1, uint64_t op2, ALU_OP control_bits)
             return op1 + op2;
         case ALU_OP::AND: 
             return op1 & op2;
-        case ALU_OP::MUL: 
-            return op1 * op2;
         case ALU_OP::OR: 
             return op1 | op2;
-        case ALU_OP::XOR: 
-            return op1 ^ op2;
         case ALU_OP::SUB: 
             return op1 - op2; 
         default:
@@ -78,6 +75,18 @@ uint32_t RISC_V::Processor::instruction_memory(uint64_t instruction_addr)
 
 uint64_t RISC_V::Processor::data_memory(uint64_t memory_addr, uint64_t write_data, int mem_write, int mem_read)
 {
+    // If store instruction needs more space, increase memory and fill new byte spaces with 0 
+    if (mem_write == 1 && (memory_addr + 7 >= memory.size())) 
+    {
+        memory.resize(memory_addr + 8, 0); // Fills any gaps with safe 0s
+    }
+
+    if (mem_read == 1 && (memory_addr + 7 >= memory.size()))
+    {
+        return 0; // Return safe 0 instead of crashing with out-of-bounds reads
+    }
+
+
     if(mem_read == 1 && mem_write == 0)
     {
         uint64_t read_memory = 0;
@@ -99,6 +108,11 @@ uint64_t RISC_V::Processor::data_memory(uint64_t memory_addr, uint64_t write_dat
     return 0;
 }
 
+uint64_t RISC_V::Processor::get_data_memory()
+{
+    return instruction_memory(pc);
+}
+
 
 
 std::vector<uint32_t> RISC_V::Processor::instruction_parser(uint32_t instruction)
@@ -118,6 +132,23 @@ std::vector<uint32_t> RISC_V::Processor::instruction_parser(uint32_t instruction
     fields.push_back(funct7);
     return fields;
 }
+
+uint64_t RISC_V::Processor::program_counter(uint64_t pc_in, int reset)
+{
+    uint64_t pc_out = pc;
+    if(reset)
+    {
+        return pc_out; 
+    }
+    return pc_in;
+}
+
+
+uint64_t RISC_V::Processor::adder(uint64_t a, uint64_t b)
+{
+    return a + b;
+}
+
 
 std::vector<uint8_t> RISC_V::Processor::control_unit(uint8_t opcode)
 {   
@@ -157,12 +188,46 @@ std::vector<uint8_t> RISC_V::Processor::control_unit(uint8_t opcode)
     signals.push_back(ALU_Op);
     signals.push_back(mem_write);
     signals.push_back(ALU_Src);
-    signals.push_back(reg_write);\
+    signals.push_back(reg_write);
 
     return signals;
 }
 
+RISC_V::ALU_OP RISC_V::Processor::alu_control(int alu_op, uint32_t funct3, uint32_t instruction)
+{
+    if(alu_op == 0)
+    {
+        return RISC_V::ALU_OP::ADD;
+    }
+    else if(alu_op == 1)
+    {
+        return RISC_V::ALU_OP::SUB;
+    }
+    else if(alu_op == 2)
+    {   
+        uint8_t bit_30 = (instruction >> 30) & 1;
+        if(bit_30 == 0)
+        {
+            switch (funct3)
+            {
+                case 0: 
+                    return RISC_V::ALU_OP::ADD;
 
+                case 6:
+                    return RISC_V::ALU_OP::OR;
+                
+                case 7:
+                    return RISC_V::ALU_OP::AND;
+            }
+
+        }
+        else
+        {
+            return RISC_V::ALU_OP::SUB;
+        }
+    }
+    return RISC_V::ALU_OP::ADD;
+}
 
 
 int64_t RISC_V::Processor::imm_gen(uint32_t instruction, uint8_t opcode)
@@ -217,8 +282,125 @@ std::vector<uint64_t> RISC_V::Processor::register_file(uint64_t write_data, uint
 
 
 
-int main()
+void RISC_V::Processor::step()
 {
-    RISC_V::Processor processor = RISC_V::Processor();
-    return 0;
-}   
+    uint32_t instruction = instruction_memory(pc);
+    if(instruction == 0 && pc + 3 >= memory.size())
+    {
+        return;
+    }
+    std::vector<uint32_t> fields = instruction_parser(instruction);
+    uint32_t opcode = fields[0];
+    uint32_t rd = fields[1]; 
+    uint32_t funct3 = fields[2]; 
+    uint32_t rs1 = fields[3]; 
+    uint32_t rs2 = fields[4]; 
+
+    std::vector<uint8_t> signals = control_unit(opcode);
+    uint8_t branch = signals[0];
+    uint8_t mem_read = signals[1];
+    uint8_t mem_to_reg = signals[2];
+    uint8_t ALU_Op = signals[3];
+    uint8_t mem_write = signals[4];
+    uint8_t ALU_Src = signals[5];
+    uint8_t reg_write = signals[6];
+
+    uint64_t imm_data = imm_gen(instruction, opcode);
+    
+    
+    std::vector<uint64_t> read_data = register_file(0, rs1, rs2, rd, 0);
+    uint64_t data1 = read_data[0];
+    uint64_t data2 = read_data[1];
+
+    int ALU_Src_int = ALU_Src;
+    uint64_t b = mux(data2, imm_data, ALU_Src_int);
+    RISC_V::ALU_OP operation = alu_control(ALU_Op, funct3, instruction);
+    uint64_t alu_result = alu(data1, b, operation);
+
+    int mem_write_int = mem_write;
+    int mem_read_int = mem_read;
+    uint64_t data_mem_out = data_memory(alu_result, data2, mem_write_int, mem_read_int);
+
+    int mem_to_reg_int = mem_to_reg;
+    final_write_data = mux(alu_result, data_mem_out, mem_to_reg_int);
+    int reg_write_int = reg_write;
+    if(reg_write_int)
+    {
+        register_file(final_write_data, rs1, rs2, rd, 1);
+    }
+
+    uint64_t pc_plus_4 = adder(pc, 4);
+    uint64_t pc_branch = adder(pc, imm_data);
+    int branch_int = branch;
+    int zero_signal = 0;
+    if(alu_result == 0)
+    {
+        zero_signal = 1;
+    }
+    uint64_t next_pc = mux(pc_plus_4, pc_branch, branch_int & !zero_signal);
+    pc = program_counter(next_pc, 0);
+}
+
+void RISC_V::Processor::dump_registers() 
+{
+    std::cout << "\n============================== REGISTER FILE SNAPSHOT ==============================\n";
+    std::cout << "PC: 0x" << std::hex << std::setw(8) << std::setfill('0') << pc << std::dec << "\n\n";
+    
+    for (int i = 0; i < 32; i++) {
+        // Force the output to print using base-10 decimal formatting
+        std::cout << "x" << std::setw(2) << std::setfill('0') << i << ": " 
+                  << std::dec << std::setw(12) << std::setfill('0') << registers[i] << "    ";
+        if ((i + 1) % 4 == 0) std::cout << "\n";
+    }
+    std::cout << "====================================================================================\n";
+}
+
+
+
+
+void RISC_V::Processor::dump_memory(uint64_t start_addr, uint64_t element_count) 
+{
+    std::cout << "\n=========================== DATA MEMORY (ARRAY VIEW) ===========================\n";
+    std::cout << "Displaying " << element_count << " doublewords starting at address " << start_addr << ":\n\n";
+
+    for (uint64_t i = 0; i < element_count; i++) {
+        uint64_t current_addr = start_addr + (i * 8);
+        
+        // Safety guard to avoid reading past your memory vector size
+        if (current_addr + 7 >= memory.size()) {
+            std::cout << "Address 0x" << std::hex << current_addr << " is OUT OF BOUNDS!\n";
+            break;
+        }
+
+        // Reruct the 64-bit data variable precisely like your data_memory function does
+        uint64_t value = 0;
+        for (int b = 0; b < 8; b++) {
+            value |= (static_cast<uint64_t>(memory[current_addr + b]) << (b * 8));
+        }
+
+        std::cout << "Index [" << std::setw(2) << i << "] | Address: " 
+                  << std::setw(4) << current_addr << " | Value: " 
+                  << std::setw(12) << static_cast<int64_t>(value) << "\n";
+    }
+    std::cout << "====================================================================================\n";
+}
+
+bool RISC_V::Processor::is_running() 
+{
+    if (pc + 3 >= memory.size()) 
+    {
+        return false; 
+    }
+    
+    if (instruction_memory(pc) == 0) 
+    {
+        return false;
+    }
+    
+    return true; 
+}
+
+void RISC_V::Processor::load_test_data(uint64_t address, uint64_t value)
+{
+    data_memory(address, value, 1, 0); 
+}
