@@ -349,7 +349,7 @@ void RISC_V::Processor::dump_registers()
 void RISC_V::Processor::dump_memory(uint64_t start_addr, uint64_t element_count)
 {
     std::cout << "\nDATA MEMORY:\n";
-    std::cout << "Displaying " << element_count << " doublewords starting at address " << start_addr << ".\n\n";
+    std::cout << element_count << " data items starting at address " << start_addr << ".\n\n";
 
     for (uint64_t i = 0; i < element_count; i++)
     {
@@ -368,10 +368,9 @@ void RISC_V::Processor::dump_memory(uint64_t start_addr, uint64_t element_count)
         }
 
         const std::string index_label = std::to_string(i);
-        std::cout << "Index: "<< std::setfill(' ') << index_label
-                  << std::right << ", Address: "
-                  << std::setw(4) << current_addr << ", Value: "
-                  << std::setw(2) << static_cast<int64_t>(value) << "\n";
+        std::cout << "Index: "<< std::setfill(' ') << index_label << ", Address: "
+                  << current_addr << ", Value: "
+                  << static_cast<int64_t>(value) << "\n";
     }
 }
 
