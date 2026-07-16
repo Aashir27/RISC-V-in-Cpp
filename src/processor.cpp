@@ -62,7 +62,8 @@ uint32_t RISC_V::Processor::instruction_memory(uint64_t instruction_addr)
     {
         std::cerr << "Error: PC out of memory bounds!" << std::endl;
         return 0;
-    }
+    } 
+    // Reconstructing instruction from memory, extracting bytes and combining in correct order based on Little Endian format
     uint32_t byte0 = static_cast<uint32_t>(memory[instruction_addr]);
     uint32_t byte1 = static_cast<uint32_t>(memory[instruction_addr + 1]);
     uint32_t byte2 = static_cast<uint32_t>(memory[instruction_addr + 2]);
@@ -175,6 +176,10 @@ std::vector<uint8_t> RISC_V::Processor::control_unit(uint8_t opcode)
         branch = 1;
         ALU_Op = 1;
     }
+    else if (opcode == 103 || opcode == 111)
+    {
+        reg_write = 1;
+    }
     signals.push_back(branch);
     signals.push_back(mem_read);
     signals.push_back(mem_to_reg);
@@ -188,6 +193,7 @@ std::vector<uint8_t> RISC_V::Processor::control_unit(uint8_t opcode)
 
 RISC_V::ALU_OP RISC_V::Processor::alu_control(int alu_op, uint32_t funct3, uint32_t instruction)
 {
+    uint32_t opcode = instruction & 127;
     if (alu_op == 0)
     {
         return RISC_V::ALU_OP::ADD;
@@ -198,6 +204,11 @@ RISC_V::ALU_OP RISC_V::Processor::alu_control(int alu_op, uint32_t funct3, uint3
     }
     else if (alu_op == 2)
     {
+        if (opcode == 19)
+        {
+            return RISC_V::ALU_OP::ADD;
+        }
+
         uint8_t bit_30 = (instruction >> 30) & 1;
         if (bit_30 == 0)
         {
@@ -224,32 +235,35 @@ RISC_V::ALU_OP RISC_V::Processor::alu_control(int alu_op, uint32_t funct3, uint3
 int64_t RISC_V::Processor::imm_gen(uint32_t instruction, uint8_t opcode)
 {
     int64_t imm_data = 0;
-    uint32_t imm_11_5 = 0;
-    uint32_t imm_4_0 = 0;
-    uint32_t imm_12 = 0;
-    uint32_t imm_10_5 = 0;
-    uint32_t imm_4_1 = 0;
-    uint32_t imm_11 = 0;
 
-    if (opcode == 19 || opcode == 3) // I-type instructions (addi, ld)
+    if (opcode == 19 || opcode == 3 || opcode == 103) // I-type instructions (addi, ld, jalr)
     {
         imm_data = static_cast<int32_t>(instruction) >> 20;
     }
     else if (opcode == 35) // S-type isntructions
     {
-        imm_11_5 = (instruction >> 25) & 127;
-        imm_4_0 = (instruction >> 7) & 31;
+        uint32_t imm_11_5 = (instruction >> 25) & 127;
+        uint32_t imm_4_0 = (instruction >> 7) & 31;
         uint32_t combined = (imm_11_5 << 5) | imm_4_0;
         imm_data = static_cast<int32_t>(combined << 20) >> 20;
     }
     else if (opcode == 99) // SB-type instructions
     {
-        imm_12 = (instruction >> 31) & 1;
-        imm_10_5 = (instruction >> 25) & 63;
-        imm_4_1 = (instruction >> 8) & 15;
-        imm_11 = (instruction >> 7) & 1;
+        uint32_t imm_12 = (instruction >> 31) & 1;
+        uint32_t imm_10_5 = (instruction >> 25) & 63;
+        uint32_t imm_4_1 = (instruction >> 8) & 15;
+        uint32_t imm_11 = (instruction >> 7) & 1;
         uint32_t combined = (imm_12 << 12) | (imm_11 << 11) | (imm_10_5 << 5) | (imm_4_1 << 1);
         imm_data = static_cast<int32_t>(combined << 19) >> 19;
+    }
+    else if (opcode == 111) // J-type instructions (jal)
+    {
+        uint32_t imm_20 = (instruction >> 31) & 1;
+        uint32_t imm_10_1 = (instruction >> 21) & 1023;
+        uint32_t imm_11 = (instruction >> 20) & 1;
+        uint32_t imm_19_12 = (instruction >> 12) & 255;
+        uint32_t combined = (imm_20 << 20) | (imm_19_12 << 12) | (imm_11 << 11) | (imm_10_1 << 1);
+        imm_data = static_cast<int32_t>(combined << 11) >> 11;
     }
     return imm_data;
 }
@@ -259,9 +273,9 @@ std::vector<uint64_t> RISC_V::Processor::register_file(uint64_t write_data, uint
     std::vector<uint64_t> read_data;
     if (reg_write && rd != 0)
     {
-        registers[rd] = static_cast<int64_t>(write_data);
+        registers[rd] = static_cast<int64_t>(write_data);  // writing data into register if reg_write signal is high
     }
-    registers[0] = 0;
+    registers[0] = 0;  // Keeping x0 fixed to 0
 
     uint64_t data1 = static_cast<uint64_t>(registers[rs1]);
     uint64_t data2 = static_cast<uint64_t>(registers[rs2]);
@@ -295,10 +309,23 @@ void RISC_V::Processor::step()
     uint8_t reg_write = signals[6];
 
     uint64_t imm_data = imm_gen(instruction, opcode);
-
     std::vector<uint64_t> read_data = register_file(0, rs1, rs2, rd, 0);
     uint64_t data1 = read_data[0];
     uint64_t data2 = read_data[1];
+
+    if (opcode == 111)  // write-back for jal instruction
+    {
+        register_file(pc + 4, rs1, rs2, rd, 1);
+        pc = adder(pc, imm_data);
+        return;
+    }
+
+    if (opcode == 103)  // write-back for jalr instruction
+    {
+        register_file(pc + 4, rs1, rs2, rd, 1);
+        pc = (data1 + imm_data) & ~1ULL;
+        return;
+    }
 
     int ALU_Src_int = ALU_Src;
     uint64_t b = mux(data2, imm_data, ALU_Src_int);
@@ -319,13 +346,35 @@ void RISC_V::Processor::step()
 
     uint64_t pc_plus_4 = adder(pc, 4);
     uint64_t pc_branch = adder(pc, imm_data);
-    int branch_int = branch;
-    int zero_signal = 0;
-    if (alu_result == 0)
+    int branch_taken = 0;
+    if (branch)
     {
-        zero_signal = 1;
+        switch (funct3)
+        {
+        case 0:
+            branch_taken = (data1 == data2);  // beq
+            break;
+        case 1:
+            branch_taken = (data1 != data2);  // bne
+            break;
+        case 4:
+            branch_taken = (static_cast<int64_t>(data1) < static_cast<int64_t>(data2));  // blt
+            break;
+        case 5:
+            branch_taken = (static_cast<int64_t>(data1) >= static_cast<int64_t>(data2));  // bge
+            break;
+        case 6:
+            branch_taken = (data1 < data2);  // bltu
+            break;
+        case 7:
+            branch_taken = (data1 >= data2);  // bgeu
+            break;
+        default:
+            branch_taken = 0;  // no branch taken
+            break;
+        }
     }
-    uint64_t next_pc = mux(pc_plus_4, pc_branch, branch_int & !zero_signal);
+    uint64_t next_pc = mux(pc_plus_4, pc_branch, branch_taken);
     pc = program_counter(next_pc, 0);
 }
 
@@ -340,7 +389,7 @@ void RISC_V::Processor::dump_registers()
         std::cout << std::left << std::setw(4) << std::setfill(' ') << register_name
                   << std::right << std::dec << std::setw(12) << std::setfill('0') << registers[i]
                   << "    ";
-                  
+
         if ((i + 1) % 4 == 0)
             std::cout << "\n";
     }
@@ -368,7 +417,7 @@ void RISC_V::Processor::dump_memory(uint64_t start_addr, uint64_t element_count)
         }
 
         const std::string index_label = std::to_string(i);
-        std::cout << "Index: "<< std::setfill(' ') << index_label << ", Address: "
+        std::cout << "Index: " << std::setfill(' ') << index_label << ", Address: "
                   << current_addr << ", Value: "
                   << static_cast<int64_t>(value) << "\n";
     }
